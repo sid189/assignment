@@ -147,11 +147,28 @@ curl -s localhost:3000/products | jq '.[] | select(.id == "p-poster")'
 
 ## API documentation
 
+- **`http://localhost:3000/docs`** — interactive Swagger UI, live while the server is running.
+  Every endpoint is browsable and "Try it out"-able directly from the browser.
+- `http://localhost:3000/openapi.json` — the same spec as JSON, if you want to point a tool
+  (Postman, Insomnia, ...) at a live URL instead of importing the file.
 - `API_DESIGN.md` — full narrative contract: resources, state machines, concurrency/idempotency
   strategy, every endpoint with status codes and error cases.
-- `openapi.yaml` — machine-readable mirror of the same contract.
+- `openapi.yaml` — the static source of the same contract (what `/docs` and `/openapi.json` serve).
 - Admin endpoints (`POST /admin/coupons/generate`, `GET /admin/reports/summary`) are the only ones
   treated as administrative. No authentication is implemented, per the assignment's scope.
+
+## Testing it yourself
+
+Three ways, roughly in order of effort:
+
+1. **Swagger UI** (`http://localhost:3000/docs`) — click into any endpoint, "Try it out", fill the
+   fields, "Execute". No tooling needed beyond a browser. Best for poking around interactively.
+2. **curl / httpie**, or import `openapi.yaml` into Postman/Insomnia as a collection — best for a
+   scripted walkthrough. See "Demo walkthrough" above for a copy-paste sequence, including the
+   concurrent-oversell demo (which Swagger UI can't drive on its own, since it only fires one
+   request at a time).
+3. **The automated test suite** (`npm test`) — this is the actual correctness evidence, not just a
+   manual click-through: 44 tests including every concurrency scenario described in this README.
 
 ## Project layout
 

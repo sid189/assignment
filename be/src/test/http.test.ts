@@ -4,6 +4,24 @@ import { buildApp } from "../http/app.js";
 import { buildTestHarness } from "./testHarness.js";
 
 describe("HTTP layer", () => {
+  it("serves a landing response at / listing the available endpoints", async () => {
+    const app = buildApp(buildTestHarness());
+    const res = await request(app).get("/").expect(200);
+    expect(res.body.service).toBe("checkout-rewards-service");
+    expect(res.body.endpoints).toEqual(expect.arrayContaining([expect.stringContaining("/products")]));
+  });
+
+  it("serves the raw OpenAPI spec and an interactive Swagger UI", async () => {
+    const app = buildApp(buildTestHarness());
+
+    const spec = await request(app).get("/openapi.json").expect(200);
+    expect(spec.body.openapi).toBe("3.0.3");
+    expect(spec.body.paths).toHaveProperty("/carts/{cartId}/checkout");
+
+    const docsPage = await request(app).get("/docs/").expect(200);
+    expect(docsPage.text).toContain("swagger-ui");
+  });
+
   it("supports the full cart -> checkout -> order flow", async () => {
     const app = buildApp(buildTestHarness());
 
