@@ -139,4 +139,25 @@ describe("AsyncLock", () => {
 
     expect(order).toEqual(["1", "2", "3"]);
   });
+
+  it("releases the lock even when the wrapped callback throws (no deadlock on error)", async () => {
+    const lock = new AsyncLock();
+
+    await expect(
+      lock.withLock("cart:1", async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+
+    // If release() weren't called in a finally, this would hang forever —
+    // vitest's default timeout would fail the test rather than the
+    // assertion itself, which is exactly the failure mode a stuck lock
+    // would produce in production (every future checkout on this cart
+    // silently hangs).
+    const order: string[] = [];
+    await lock.withLock("cart:1", async () => {
+      order.push("ran");
+    });
+    expect(order).toEqual(["ran"]);
+  });
 });

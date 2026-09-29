@@ -142,6 +142,33 @@ describe("CheckoutService — idempotency", () => {
     );
     expect(gateway.calls).toBe(1); // second call was served from the recorded failure
   });
+
+  it("allows a genuinely new attempt (new key) on the same cart to succeed after a prior decline", async () => {
+    // A gateway that declines once, then accepts — models a customer fixing
+    // a payment issue and retrying with a fresh Idempotency-Key. This also
+    // proves the per-cart AsyncLock is actually released after a failed
+    // attempt: if it weren't, this second call would hang rather than fail
+    // or succeed (see the direct AsyncLock proof in store.test.ts).
+    let callCount = 0;
+    const flakyGateway: PaymentGateway = {
+      async charge() {
+        callCount += 1;
+        return callCount === 1 ? { success: false, reason: "temporary" } : { success: true };
+      },
+    };
+    const { carts, checkout } = buildTestHarness({ paymentGateway: flakyGateway });
+    const cart = carts.createCart("cust1");
+    carts.addItem(cart.id, "p-mug", 1);
+
+    await expectAsyncAppErrorCode(
+      () => checkout.checkout({ cartId: cart.id, idempotencyKey: "attempt-1" }),
+      "PAYMENT_DECLINED",
+    );
+
+    const order = await checkout.checkout({ cartId: cart.id, idempotencyKey: "attempt-2" });
+    expect(order.status).toBe("placed");
+    expect(callCount).toBe(2);
+  });
 });
 
 describe("CheckoutService — concurrency across different carts", () => {

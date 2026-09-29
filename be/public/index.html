@@ -221,8 +221,13 @@
     while (log.children.length > 40) log.removeChild(log.lastChild);
   }
 
+  // Escapes for both text-node and quoted-attribute contexts (this is used
+  // for both — e.g. data-remove="..."), so quotes are escaped too, not
+  // just &/</>.
   function escapeHtml(s) {
-    return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    }[c]));
   }
 
   async function api(method, path, { body, headers } = {}) {
@@ -248,8 +253,11 @@
     tbody.innerHTML = "";
     state.products.forEach((p) => {
       const tr = document.createElement("tr");
+      // Product name/id are seed data today, not user input — escaped
+      // anyway so this stays safe if a product-authoring endpoint is ever
+      // added later.
       tr.innerHTML =
-        "<td>" + p.name + " <span class=\"muted\">(" + p.id + ")</span></td>" +
+        "<td>" + escapeHtml(p.name) + " <span class=\"muted\">(" + escapeHtml(p.id) + ")</span></td>" +
         "<td>" + money(p.unitPriceCents) + "</td>" +
         "<td>" + p.availableInventory + "</td>";
       tbody.appendChild(tr);
@@ -274,11 +282,15 @@
     tbody.innerHTML = "";
     (data.items || []).forEach((item) => {
       const tr = document.createElement("tr");
+      // productId is server-validated against the real catalog (see
+      // PRODUCT_NOT_FOUND in cartService), but escaped anyway — same
+      // defense-in-depth reasoning as loadProducts above.
+      const safeProductId = escapeHtml(item.productId);
       tr.innerHTML =
-        "<td>" + item.productId + "</td>" +
+        "<td>" + safeProductId + "</td>" +
         "<td>" + item.quantity + "</td>" +
         "<td>" + money(item.lineTotalCents) + "</td>" +
-        '<td><button data-remove="' + item.productId + '" class="secondary">remove</button></td>';
+        '<td><button data-remove="' + safeProductId + '" class="secondary">remove</button></td>';
       tbody.appendChild(tr);
     });
     $("cartSubtotal").textContent = "Subtotal: " + money(data.subtotalCents || 0);

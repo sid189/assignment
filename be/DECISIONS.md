@@ -375,7 +375,49 @@ were found and closed in a later pass — see Decision 5's "Update — closed." 
    schema library if the request surface were to grow past its current handful of flat fields.
 3. **Observability** — structured request logging and a correlation ID per request, useful for
    debugging idempotency-key replay behavior in particular.
-4. **A targeted audit for the same class of bug elsewhere** — the `reserve()` partial-mutation bug
-   was a "loop that both validates and mutates" shape; worth specifically checking whether any
-   other multi-step mutation in the codebase shares that shape rather than assuming this was the
-   only instance.
+4. ~~A targeted audit for the same class of bug elsewhere~~ — done, see "Hardening pass" below.
+
+## Hardening pass
+
+A follow-up session specifically aimed at finding weaknesses before submission, rather than
+building new features. Three real issues were found and fixed, plus a full fresh-clone
+verification:
+
+- **`PAYLOAD_TOO_LARGE` fell through to a generic 500.** `express.json()` (and body-parser
+  generally) throws plain `http-errors`-style objects — not `AppError` instances — for malformed
+  JSON and oversized request bodies. The malformed-JSON case was already handled by a
+  `SyntaxError` check; an oversized body (found by deliberately sending one) was not, and fell
+  through to a misleading `500 INTERNAL_ERROR`. Generalized `errorHandler` to recognize any
+  middleware error carrying a numeric `status`/`statusCode` in the 4xx range, mapping 413
+  specifically to a new `PAYLOAD_TOO_LARGE` code and any other unrecognized 4xx to a `REQUEST_ERROR`
+  catch-all, rather than defaulting everything unmatched to 500. This matters because a 500 tells
+  an API client "retrying might work, this is our fault" when the true answer is "this request is
+  malformed, retrying with the same body never will" — the wrong signal for a client's own retry
+  logic to receive.
+- **XSS defense-in-depth in the demo frontend.** Auditing every `innerHTML` call site: no *live*
+  exploit exists today (order IDs are server-generated UUIDs, error codes are a fixed enum, and
+  the request-log panel's raw JSON was already escaped) — but the products table and cart table
+  interpolated `product.name`/`product.id`/`item.productId` into `innerHTML` unescaped, safe only
+  because nothing today lets a client control those values. Fixed anyway, on the reasoning that
+  "safe because of what the data happens to be today" is exactly the kind of assumption a later,
+  unrelated change (e.g. adding a product-authoring endpoint) silently breaks. Also fixed
+  `escapeHtml` itself, which only escaped `&`/`<`/`>` — insufficient for the one place a value was
+  used inside a quoted HTML attribute (`data-remove="..."`), where an unescaped `"` could break out
+  of the attribute; it now escapes quotes too.
+- **Proved, rather than assumed, that `AsyncLock` can't deadlock on error.** `withLock`'s
+  `release()` call was always inside a `finally`, so this was correct by inspection, but untested —
+  added a direct test asserting a second acquisition of the same key succeeds immediately after a
+  first callback throws, plus a business-level version (`CheckoutService`) proving a *new*
+  `Idempotency-Key` on the same cart can succeed right after a prior payment decline, not just
+  replay the failure.
+- **Fresh-clone verification**, not just re-running the existing suite in the working directory:
+  cloned the repo into an isolated directory and ran `npm install` → `npm test` → `npm run build`
+  → `npm start`, then a real checkout against the compiled build — confirms the `import.meta.url`
+  -relative path resolution for `openapi.yaml`/`public/` (used by `/docs` and `/demo`) actually
+  works from a built `dist/`, not just under `tsx`.
+
+Also added HTTP-layer tests that were previously only proven at the service-unit level (customerId
+type validation, quantity type validation, missing-vs-unknown productId, and a genuinely
+concurrent — not sequential-loop — proof that `POST /admin/coupons/generate` still produces
+exactly one coupon when hit by 5 simultaneous real HTTP requests at the same milestone). Test count
+went from 44 to 53.

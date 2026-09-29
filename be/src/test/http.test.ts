@@ -58,6 +58,62 @@ describe("HTTP layer", () => {
     });
   });
 
+  it("rejects a non-string customerId (type, not just presence)", async () => {
+    const app = buildApp(buildTestHarness());
+    const res = await request(app).post("/carts").send({ customerId: 12345 }).expect(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects a non-number quantity, distinctly from a missing one", async () => {
+    const app = buildApp(buildTestHarness());
+    const cart = await request(app).post("/carts").send({ customerId: "cust1" });
+
+    const stringQty = await request(app)
+      .post(`/carts/${cart.body.id}/items`)
+      .send({ productId: "p-mug", quantity: "2" })
+      .expect(400);
+    expect(stringQty.body.error.code).toBe("VALIDATION_ERROR");
+
+    const nanQty = await request(app)
+      .post(`/carts/${cart.body.id}/items`)
+      .send({ productId: "p-mug", quantity: null })
+      .expect(400);
+    expect(nanQty.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("rejects a missing productId as VALIDATION_ERROR, distinctly from an unknown one", async () => {
+    const app = buildApp(buildTestHarness());
+    const cart = await request(app).post("/carts").send({ customerId: "cust1" });
+
+    const missing = await request(app)
+      .post(`/carts/${cart.body.id}/items`)
+      .send({ quantity: 1 })
+      .expect(400);
+    expect(missing.body.error.code).toBe("VALIDATION_ERROR");
+
+    const unknown = await request(app)
+      .post(`/carts/${cart.body.id}/items`)
+      .send({ productId: "does-not-exist", quantity: 1 })
+      .expect(404);
+    expect(unknown.body.error.code).toBe("PRODUCT_NOT_FOUND");
+  });
+
+  it("naturally rejects an absurdly large quantity via the inventory check, not silently", async () => {
+    const app = buildApp(buildTestHarness());
+    const cart = await request(app).post("/carts").send({ customerId: "cust1" });
+    const res = await request(app)
+      .post(`/carts/${cart.body.id}/items`)
+      .send({ productId: "p-mug", quantity: 1e15 })
+      .expect(409);
+    expect(res.body.error.code).toBe("INSUFFICIENT_INVENTORY");
+  });
+
+  it("rejects a missing customerId on admin coupon generation", async () => {
+    const app = buildApp(buildTestHarness());
+    const res = await request(app).post("/admin/coupons/generate").send({}).expect(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
   it("404s a missing cart with the typed error shape", async () => {
     const app = buildApp(buildTestHarness());
     const res = await request(app).get("/carts/does-not-exist").expect(404);
@@ -140,6 +196,26 @@ describe("HTTP layer", () => {
     expect(report.body.coupons).toEqual({ generated: 1, available: 1, redeemed: 0 });
   });
 
+  it("generates exactly one coupon when the admin endpoint is hit concurrently at the same milestone", async () => {
+    const app = buildApp(buildTestHarness({ reward: { milestoneEvery: 1, discountPercent: 15 } }));
+
+    const cart = await request(app).post("/carts").send({ customerId: "cust1" });
+    await request(app).post(`/carts/${cart.body.id}/items`).send({ productId: "p-notebook", quantity: 1 });
+    await request(app).post(`/carts/${cart.body.id}/checkout`).set("Idempotency-Key", "k").send({}).expect(201);
+
+    // Five genuinely concurrent HTTP requests, not a sequential loop —
+    // exercises Database.exec()'s atomicity through the real Express stack.
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => request(app).post("/admin/coupons/generate").send({ customerId: "cust1" })),
+    );
+
+    const succeeded = results.filter((r) => r.status === 201);
+    const rejected = results.filter((r) => r.status === 409);
+    expect(succeeded).toHaveLength(1);
+    expect(rejected).toHaveLength(4);
+    rejected.forEach((r) => expect(r.body.error.code).toBe("MILESTONE_NOT_REACHED"));
+  });
+
   it("404s unknown routes and 400s malformed JSON", async () => {
     const app = buildApp(buildTestHarness());
     const notFound = await request(app).get("/does-not-exist").expect(404);
@@ -151,5 +227,13 @@ describe("HTTP layer", () => {
       .send("{not json")
       .expect(400);
     expect(malformed.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("413s a request body over the size limit instead of a generic 500", async () => {
+    const app = buildApp(buildTestHarness());
+    // express.json()'s default limit is 100kb; comfortably exceed it.
+    const oversized = { customerId: "x".repeat(200_000) };
+    const res = await request(app).post("/carts").send(oversized).expect(413);
+    expect(res.body.error.code).toBe("PAYLOAD_TOO_LARGE");
   });
 });

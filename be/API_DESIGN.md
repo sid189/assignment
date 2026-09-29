@@ -303,6 +303,12 @@ All errors share one shape:
 human-readable; `details` is optional structured context. Every error code referenced above maps
 to exactly one HTTP status, listed per-endpoint.
 
+Two additional codes apply to every endpoint, since they originate from request-parsing
+middleware rather than any single route: `413 PAYLOAD_TOO_LARGE` (request body over Express's
+size limit) and `400 REQUEST_ERROR` (a catch-all for other malformed-request failures raised by
+middleware before a route handler runs). Found and fixed during a hardening pass — an oversized
+body previously fell through to a misleading generic `500`; see `DECISIONS.md`.
+
 ## Admin endpoint marking
 
 `/admin/coupons/generate` and `/admin/reports/summary` are the two operations this assignment
