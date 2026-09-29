@@ -7,6 +7,8 @@ and `API_DESIGN.md` / `openapi.yaml` for the full API contract.
 
 The original assignment brief is preserved at `ASSIGNMENT.md`.
 
+**Time spent:** approximately 5–6 hours of active work with Claude Code, across several sessions.
+
 ## Stack
 
 Node.js + TypeScript, Express, Vitest + Supertest for tests. No database — persistence is a
