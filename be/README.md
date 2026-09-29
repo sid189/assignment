@@ -1,186 +1,171 @@
-#Full-Stack Engineer
+# Checkout & Rewards Service
 
-## Build a Reliable Checkout and Rewards Service
+A backend for cart → checkout → orders, with a per-customer milestone coupon reward system.
+Built to demonstrate correctness under retries, concurrent requests, and competing operations —
+not just happy-path CRUD. See `DECISIONS.md` for the reasoning behind every non-obvious choice,
+and `API_DESIGN.md` / `openapi.yaml` for the full API contract.
 
-You are building the backend for an ecommerce store. Customers create carts, add products, and check out. The store rewards purchasing activity by making a discount coupon available after every *n*th successfully placed order.
+The original assignment brief is preserved at `ASSIGNMENT.md`.
 
-The basic endpoints are straightforward. The challenge is making the system behave predictably when requests are retried, multiple customers check out concurrently, inventory changes, or two operations compete for the same coupon.
+## Stack
 
-We are evaluating how you reason about those situations—not how quickly you can generate CRUD code.
+Node.js + TypeScript, Express, Vitest + Supertest for tests. No database — persistence is a
+hand-rolled, Redis-inspired in-memory store (`src/store/`), chosen specifically to demonstrate the
+concurrency reasoning the assignment evaluates rather than delegating it to an external engine.
+See `DECISIONS.md` → "Decision 3" and "Evolving to multiple instances and a production database"
+for why, and what would change for real infrastructure.
 
-## Timebox
+## Requirements
 
-Please spend **no more than 4–6 hours** on the assignment.
+- Node.js 20+ (uses `structuredClone` and `node:crypto`'s `randomUUID`, both built in)
 
-We do not expect every production concern to be implemented. Prioritize the risks you consider most important, implement a coherent solution, and document what you intentionally deferred in `DECISIONS.md`.
+## Setup
 
-## Business Requirements
-
-### Products and inventory
-
-- A product has an ID, name, current unit price, and available inventory.
-- Seed at least five products. Include at least one product with limited inventory.
-- A cart may contain multiple products and quantities.
-- Invalid products or quantities must not silently enter a cart.
-- The system must not sell more inventory than is available.
-
-### Carts
-
-- A client can create a cart, add an item, change its quantity, remove an item, and view the cart.
-- Return useful prices and totals when viewing a cart.
-- A cart must not be checked out more than once.
-- Decide and document what happens when product price or availability changes after an item was added but before checkout.
-
-### Checkout and orders
-
-- Checkout validates the cart and, if successful, creates an order.
-- Clients may retry a checkout request because they timed out or did not receive the response. A retry must not accidentally create another order or charge inventory twice.
-- Concurrent checkout attempts must not oversell inventory.
-- An order must retain enough information to explain what the customer purchased and how its total was calculated, even if product data later changes.
-- Calculate money without floating-point rounding errors.
-- Return errors that are distinguishable and useful to an API client.
-
-No real payment integration is required. Treat successful checkout as payment success, or introduce a small payment abstraction/fake if it supports your design. Explain the choice.
-
-### Discount coupons
-
-- Configure the system with values `n` and `x`. For example, when `n = 5` and `x = 10`, every fifth successfully placed order makes one coupon for 10% off available.
-- An administrator can request coupon generation.
-- A coupon is generated only if the configured order milestone has been reached and a coupon has not already been generated for that milestone.
-- A valid coupon may be supplied at checkout.
-- A coupon can be redeemed only once.
-- A coupon must not be lost or consumed by a checkout that ultimately fails.
-- A coupon must not be redeemed successfully by two concurrent checkouts.
-- Discount calculations must be deterministic and must never make an order total negative.
-
-You will need to decide some coupon semantics that are not specified here. Make defensible choices and record them.
-
-### Administration and reporting
-
-Provide administrator operations to:
-
-1. Generate a coupon when an unrewarded milestone is eligible.
-2. Return a summary containing:
-   - successfully purchased quantity by product;
-   - gross revenue before discounts;
-   - total discounts granted;
-   - net revenue;
-   - coupons generated, available, and redeemed; and
-   - total successfully placed orders.
-
-The report should reconcile with the orders and coupons returned by your system. Repeated report requests must not mutate state.
-
-## API Design
-
-Design the HTTP API you believe best represents the domain. At minimum, it must support:
-
-- cart creation and retrieval;
-- adding, updating, and removing cart items;
-- checkout with an optional coupon;
-- retrieving an order;
-- administrator coupon generation; and
-- administrator reporting.
-
-Document each endpoint, request, response, expected status code, and important error case. You may provide an OpenAPI document, an API client collection, executable examples, or clear README documentation.
-
-Authentication and authorization do not need to be implemented. Clearly identify which operations you treat as administrative.
-
-## Persistence and Concurrency
-
-You may use a database, an embedded database, or an in-memory implementation.
-
-An in-memory implementation is acceptable only if it still demonstrates how you preserve the required invariants when requests overlap. Explain how the design would change with multiple application instances and a production database.
-
-We may exercise the service with concurrent requests and repeated requests. Tests that only call each endpoint once in a happy-path sequence will not be sufficient.
-
-## Required Deliverables
-
-### 1. Working service
-
-- Source code in the stack of your choice
-- Repeatable setup and run instructions
-- Seed data or migrations required to evaluate the service
-- No dependency on private services or credentials
-
-### 2. Automated tests
-
-Include focused tests for the business rules and failure modes you consider most important. We value a small number of meaningful tests over high superficial coverage.
-
-At least one test must exercise competing or repeated operations—not merely sequential happy paths.
-
-### 3. `DECISIONS.md`
-
-This is a required and heavily weighted part of the submission. Include:
-
-- the system invariants you identified;
-- ambiguities you found and the semantics you selected;
-- at least five material design decisions and alternatives considered;
-- your transaction, concurrency, and idempotency strategy;
-- money and rounding rules;
-- error-model choices;
-- what you implemented versus intentionally deferred;
-- how the design would evolve for multiple service instances and production scale;
-- how you used AI tools, including an example where you corrected, rejected, or materially redirected AI output; and
-- what you would examine first if given another two hours.
-
-For each material decision, a useful structure is:
-
-```markdown
-## Decision: [Title]
-
-**Context:** What correctness or design problem were you solving?
-
-**Options considered:** What credible alternatives did you consider?
-
-**Choice:** What did you choose?
-
-**Why:** What trade-offs, constraints, or failure modes drove the decision?
-
-**Consequences:** What becomes easier, harder, or deferred as a result?
+```bash
+cd be
+npm install
 ```
 
-### 4. Repository history
+No environment variables, credentials, or external services are required. Two are optional (see
+below).
 
-Commit your work in meaningful increments. We do not grade the number of commits, but the history should help us understand how the solution developed.
+## Running the service
 
-## AI Use
+```bash
+npm run dev     # tsx watch — restarts on file changes
+# or
+npm run build && npm start   # compiled, production-style run
+```
 
-You are encouraged to use ChatGPT, Codex, Claude, Copilot, or other AI tools. Using AI is not a shortcut we penalize; using generated code without validating its behavior is.
+The server listens on `http://localhost:3000` by default. Product data (5 products, one with
+scarce stock) is seeded in-memory on startup — see `src/seed.ts`.
 
-You are responsible for every line submitted. In the follow-up discussion, we may ask you to:
+### Configuration
 
-- explain an invariant and show where it is enforced;
-- predict behavior under a concurrent or repeated request;
-- identify a weakness in your implementation;
-- change one business rule; or
-- debug a failing scenario with us.
+| Variable | Default | Meaning |
+|---|---|---|
+| `PORT` | `3000` | HTTP port |
+| `COUPON_MILESTONE_N` | `5` | Every customer's Nth successful order unlocks a coupon |
+| `COUPON_DISCOUNT_X` | `10` | Discount percentage the unlocked coupon carries |
 
-Do not include private AI transcripts. A concise account of how AI affected your approach belongs in `DECISIONS.md`.
+## Running tests
 
-## Evaluation
+```bash
+npm test          # single run
+npm run test:watch
+```
 
-We will evaluate:
+40 tests across the store engine, each domain service, and the HTTP layer, including the
+concurrency scenarios the assignment specifically calls for: concurrent checkouts racing for
+limited stock, concurrent identical idempotent retries, two carts of one customer racing to
+redeem the same coupon, and payment-decline rollback + failure replay.
 
-1. **Correctness and invariants** — orders, inventory, coupons, and reporting remain consistent.
-2. **Reasoning and judgment** — ambiguities and trade-offs are recognized and resolved deliberately.
-3. **Failure behavior** — retries, conflicts, validation failures, and concurrent operations have coherent outcomes.
-4. **Domain and API design** — responsibilities, state transitions, and error contracts are understandable.
-5. **Testing** — tests target meaningful risks and can expose incorrect implementations.
-6. **Code quality** — the implementation is focused, readable, and proportionate to the timebox.
-7. **Ownership of AI-assisted work** — the candidate can critique, explain, and modify what they submitted.
+## Demo walkthrough
 
-Frontend work is optional and will not compensate for an unreliable backend. If you add a frontend, keep it small and use it to demonstrate the backend behavior.
+Uses [`jq`](https://jqlang.org/) for readability — if you don't have it installed, drop the
+`| jq` pipes and read the raw JSON instead; nothing below depends on it. Every step here was run
+against the actual server while writing this README, not just described.
 
-## Submission
+With the server running (`npm run dev`), this is a full cart → checkout → coupon → report cycle.
+`COUPON_MILESTONE_N=1` (see below) makes the coupon show up after a single order instead of five,
+which is more convenient for a live demo.
 
-Share a public or access-granted Git repository containing:
+```bash
+# Restart the server with a milestone of 1 for this walkthrough:
+#   COUPON_MILESTONE_N=1 npm run dev
 
-- source code;
-- setup and run instructions;
-- API documentation or executable examples;
-- automated tests; and
-- `DECISIONS.md`.
+# 1. Products
+curl -s localhost:3000/products | jq
 
-State the approximate time spent. If something is incomplete, tell us directly and explain how you would finish it.
+# 2. Create a cart and add an item
+CART=$(curl -s -X POST localhost:3000/carts -H 'Content-Type: application/json' \
+  -d '{"customerId":"cust1"}' | jq -r .id)
+curl -s -X POST localhost:3000/carts/$CART/items -H 'Content-Type: application/json' \
+  -d '{"productId":"p-mug","quantity":2}' | jq
 
-Good luck—we are looking forward to discussing your reasoning.
+# 3. View the cart (live-priced totals)
+curl -s localhost:3000/carts/$CART | jq
+
+# 4. Checkout (Idempotency-Key is required)
+ORDER=$(curl -s -X POST localhost:3000/carts/$CART/checkout \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-1' -d '{}')
+echo "$ORDER" | jq
+
+# 5. Retry the exact same request — same order comes back, nothing double-charged
+curl -s -X POST localhost:3000/carts/$CART/checkout \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-1' -d '{}' | jq
+
+# 6. Admin: generate this customer's coupon (milestone just reached)
+COUPON=$(curl -s -X POST localhost:3000/admin/coupons/generate \
+  -H 'Content-Type: application/json' -d '{"customerId":"cust1"}')
+echo "$COUPON" | jq
+CODE=$(echo "$COUPON" | jq -r .code)
+
+# 7. Use the coupon on a second order
+CART2=$(curl -s -X POST localhost:3000/carts -H 'Content-Type: application/json' \
+  -d '{"customerId":"cust1"}' | jq -r .id)
+curl -s -X POST localhost:3000/carts/$CART2/items -H 'Content-Type: application/json' \
+  -d '{"productId":"p-notebook","quantity":1}' > /dev/null
+curl -s -X POST localhost:3000/carts/$CART2/checkout \
+  -H 'Content-Type: application/json' -H 'Idempotency-Key: demo-2' \
+  -d "{\"couponCode\":\"$CODE\"}" | jq   # discountCents should be non-zero
+
+# 8. Admin report — reconciles with the two orders and one coupon above
+curl -s localhost:3000/admin/reports/summary | jq
+```
+
+To see the oversell-prevention invariant instead of just reading about it, fire several concurrent
+checkouts at the scarce product (`p-poster`, seeded with 3 units) from different carts and watch
+only 3 succeed. **Set up every cart before firing any checkout** — if setup and checkout are
+interleaved, the earlier (fast, ~15ms) checkouts can finish before later carts even add their
+item, which produces a different, less interesting failure (`400 CART_EMPTY`) instead of the
+`409` race this is meant to demonstrate:
+
+```bash
+CARTS=()
+for i in 1 2 3 4 5; do
+  CART=$(curl -s -X POST localhost:3000/carts -H 'Content-Type: application/json' \
+    -d "{\"customerId\":\"race-$i\"}" | jq -r .id)
+  curl -s -X POST localhost:3000/carts/$CART/items -H 'Content-Type: application/json' \
+    -d '{"productId":"p-poster","quantity":1}' > /dev/null
+  CARTS+=("$CART")
+done
+
+for i in 0 1 2 3 4; do
+  CART=${CARTS[$i]}
+  curl -s -o /dev/null -w "cart $((i+1)) -> %{http_code}\n" -X POST \
+    localhost:3000/carts/$CART/checkout \
+    -H 'Content-Type: application/json' -H "Idempotency-Key: race-$i" -d '{}' &
+done
+wait
+curl -s localhost:3000/products | jq '.[] | select(.id == "p-poster")'
+# expect: three 201s, two 409s, availableInventory: 0
+```
+
+(This is also exercised as an automated test, both at the service layer and over real HTTP — see
+`src/test/checkoutService.test.ts` and `src/test/http.test.ts`.)
+
+## API documentation
+
+- `API_DESIGN.md` — full narrative contract: resources, state machines, concurrency/idempotency
+  strategy, every endpoint with status codes and error cases.
+- `openapi.yaml` — machine-readable mirror of the same contract.
+- Admin endpoints (`POST /admin/coupons/generate`, `GET /admin/reports/summary`) are the only ones
+  treated as administrative. No authentication is implemented, per the assignment's scope.
+
+## Project layout
+
+```
+src/
+  domain/types.ts       Domain types (Product, Cart, Order, Coupon, ...)
+  store/                The concurrency engine: Database.exec() (atomic commit),
+                         AsyncLock (cross-await per-key mutex), clone()
+  services/              One service per resource; checkoutService.ts is the core
+                         reserve -> pay -> finalize flow
+  http/                 Express app, routers, error handling, request validation
+  errors/AppError.ts     Typed errors (code, httpStatus, message, details)
+  seed.ts, config.ts     Seed data and n/x reward configuration
+  composition.ts          Wires the store + lock + payment gateway into the services
+  server.ts               Process entry point
+  test/                   Vitest suites (store, each service, HTTP layer)
+```
