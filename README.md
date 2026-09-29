@@ -1,3 +1,8 @@
+> **For the Checkout & Rewards Service submission, see [`be/`](./be).** That's the
+> implementation, setup instructions, `DECISIONS.md`, and tests — everything below is the
+> original assignment brief, preserved for reference. The repo root also contains unrelated
+> assignments for other roles; they are not part of this submission.
+
 # Assignment
 
 You are designing an ecommerce store. Clients can add items to their cart and checkout to successfully place an order.  The store has a discount system that rewards customers.
