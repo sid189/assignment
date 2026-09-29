@@ -1,0 +1,473 @@
+openapi: 3.0.3
+info:
+  title: Checkout & Rewards Service
+  version: "1.0.0"
+  description: >
+    Cart, checkout, and milestone-based coupon rewards for an ecommerce store.
+    See API_DESIGN.md for the full narrative contract (state machines, idempotency
+    strategy, error model rationale).
+
+servers:
+  - url: http://localhost:3000
+
+tags:
+  - name: products
+  - name: carts
+  - name: checkout
+  - name: orders
+  - name: admin
+
+paths:
+  /products:
+    get:
+      tags: [products]
+      summary: List all products
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Product"
+
+  /carts:
+    post:
+      tags: [carts]
+      summary: Create a cart for a customer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customerId]
+              properties:
+                customerId:
+                  type: string
+                  minLength: 1
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+
+  /carts/{cartId}:
+    get:
+      tags: [carts]
+      summary: View a cart with live-priced totals
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CartView"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /carts/{cartId}/items:
+    post:
+      tags: [carts]
+      summary: Add an item to the cart (merges quantity if product already present)
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId, quantity]
+              properties:
+                productId:
+                  type: string
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /carts/{cartId}/items/{productId}:
+    patch:
+      tags: [carts]
+      summary: Update an item's quantity
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+        - $ref: "#/components/parameters/ProductIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quantity]
+              properties:
+                quantity:
+                  type: integer
+                  minimum: 1
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [carts]
+      summary: Remove an item from the cart
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+        - $ref: "#/components/parameters/ProductIdPath"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Cart"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /carts/{cartId}/checkout:
+    post:
+      tags: [checkout]
+      summary: Validate the cart and create an order (idempotent via Idempotency-Key)
+      parameters:
+        - $ref: "#/components/parameters/CartId"
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                couponCode:
+                  type: string
+                  nullable: true
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            Conflict — one of CART_ALREADY_CHECKED_OUT, INSUFFICIENT_INVENTORY,
+            COUPON_ALREADY_REDEEMED, IDEMPOTENCY_KEY_CONFLICT
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "402":
+          description: PAYMENT_DECLINED — inventory/coupon are rolled back before this is returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /orders/{orderId}:
+    get:
+      tags: [orders]
+      summary: Retrieve an order
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /admin/coupons/generate:
+    post:
+      tags: [admin]
+      summary: >
+        Administrative. Generate a coupon for a customer if their successful-order
+        count has crossed an unrewarded multiple of the configured milestone n.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customerId]
+              properties:
+                customerId:
+                  type: string
+      responses:
+        "201":
+          description: Coupon created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Coupon"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "409":
+          description: >
+            MILESTONE_NOT_REACHED — also covers "already generated for this milestone",
+            see API_DESIGN.md
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /admin/reports/summary:
+    get:
+      tags: [admin]
+      summary: Administrative. Read-only reconciling summary report.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportSummary"
+
+components:
+  parameters:
+    CartId:
+      name: cartId
+      in: path
+      required: true
+      schema:
+        type: string
+    ProductIdPath:
+      name: productId
+      in: path
+      required: true
+      schema:
+        type: string
+
+  responses:
+    ValidationError:
+      description: VALIDATION_ERROR
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Conflict (e.g. CART_ALREADY_CHECKED_OUT, INSUFFICIENT_INVENTORY)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: INSUFFICIENT_INVENTORY
+            message:
+              type: string
+            details:
+              type: object
+              additionalProperties: true
+
+    Product:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        unitPriceCents:
+          type: integer
+        availableInventory:
+          type: integer
+
+    CartItem:
+      type: object
+      properties:
+        productId:
+          type: string
+        quantity:
+          type: integer
+
+    Cart:
+      type: object
+      properties:
+        id:
+          type: string
+        customerId:
+          type: string
+        status:
+          type: string
+          enum: [open, checked_out]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CartItem"
+        createdAt:
+          type: string
+          format: date-time
+
+    CartViewItem:
+      allOf:
+        - $ref: "#/components/schemas/CartItem"
+        - type: object
+          properties:
+            unitPriceCents:
+              type: integer
+            lineTotalCents:
+              type: integer
+
+    CartView:
+      allOf:
+        - $ref: "#/components/schemas/Cart"
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/CartViewItem"
+            subtotalCents:
+              type: integer
+
+    OrderItem:
+      type: object
+      properties:
+        productId:
+          type: string
+        productName:
+          type: string
+        unitPriceCents:
+          type: integer
+        quantity:
+          type: integer
+        lineTotalCents:
+          type: integer
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+        cartId:
+          type: string
+        customerId:
+          type: string
+        customerOrderSequence:
+          type: integer
+        status:
+          type: string
+          enum: [placed, failed]
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+        subtotalCents:
+          type: integer
+        discountCents:
+          type: integer
+        totalCents:
+          type: integer
+        couponCode:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    Coupon:
+      type: object
+      properties:
+        code:
+          type: string
+        customerId:
+          type: string
+        discountPercent:
+          type: integer
+        milestoneOrderNumber:
+          type: integer
+        status:
+          type: string
+          enum: [available, redeemed]
+        redeemedByOrderId:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+
+    ReportSummary:
+      type: object
+      properties:
+        purchasedQuantityByProduct:
+          type: object
+          additionalProperties:
+            type: integer
+        grossRevenueCents:
+          type: integer
+        totalDiscountCents:
+          type: integer
+        netRevenueCents:
+          type: integer
+        coupons:
+          type: object
+          properties:
+            generated:
+              type: integer
+            available:
+              type: integer
+            redeemed:
+              type: integer
+        totalSuccessfulOrders:
+          type: integer
