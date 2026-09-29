@@ -37,8 +37,10 @@ npm run dev     # tsx watch — restarts on file changes
 npm run build && npm start   # compiled, production-style run
 ```
 
-The server listens on `http://localhost:3000` by default. Product data (5 products, one with
-scarce stock) is seeded in-memory on startup — see `src/seed.ts`.
+The server listens on `http://localhost:3000` by default. Product data is seeded in-memory on
+startup — see `src/seed.ts`: 5 plentiful products, `p-poster` (3 units) and `p-scarf` (2 units) as
+two independently-scarce items for concurrency demos, and `p-typewriter` (0 units) already sold
+out for testing the immediate-rejection path.
 
 ### Configuration
 

@@ -194,6 +194,42 @@ describe("CheckoutService — concurrency across different carts", () => {
     expect(products.get("p-poster").availableInventory).toBe(0);
   });
 
+  it("keeps two independently-scarce products from cross-contaminating under concurrent carts", async () => {
+    const { carts, checkout, products } = buildTestHarness();
+
+    // Every cart wants 1 of BOTH scarce products in the same checkout:
+    // p-poster (stock 3) and p-scarf (stock 2). If reservation logic ever
+    // leaked state between products (e.g. reusing a shared counter instead
+    // of per-product inventory), this would show up as the wrong success
+    // count on one or both.
+    const cartIds = Array.from({ length: 5 }, (_, i) => {
+      const cart = carts.createCart(`cust-${i}`);
+      carts.addItem(cart.id, "p-poster", 1);
+      carts.addItem(cart.id, "p-scarf", 1);
+      return cart.id;
+    });
+
+    const results = await Promise.allSettled(
+      cartIds.map((cartId, i) => checkout.checkout({ cartId, idempotencyKey: `dual-${i}` })),
+    );
+
+    // Every checkout needs BOTH items, and p-scarf (stock 2) is the
+    // tighter constraint, so exactly 2 succeed — not "at most 2": carts
+    // attempt reserve() in creation order (each checkout's synchronous
+    // prefix runs to completion before the next resumes, since reserve()
+    // itself never awaits), so this is deterministic, not probabilistic.
+    const succeeded = results.filter((r) => r.status === "fulfilled");
+    expect(succeeded).toHaveLength(2);
+    expect(products.get("p-poster").availableInventory).toBe(1); // 3 - 2
+    expect(products.get("p-scarf").availableInventory).toBe(0); // 2 - 2
+  });
+
+  it("rejects adding an already-sold-out product immediately, not just at checkout", () => {
+    const { carts } = buildTestHarness();
+    const cart = carts.createCart("cust1");
+    expectAppErrorCode(() => carts.addItem(cart.id, "p-typewriter", 1), "INSUFFICIENT_INVENTORY");
+  });
+
   it("only one of two concurrent checkouts (different carts, same customer) can redeem the same coupon", async () => {
     const { carts, checkout, coupons } = buildTestHarness({ reward: { milestoneEvery: 1, discountPercent: 10 } });
 
