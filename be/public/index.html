@@ -77,6 +77,7 @@
   }
   button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
   button:disabled { opacity: 0.5; cursor: default; }
+  input:disabled, select:disabled { opacity: 0.5; cursor: not-allowed; }
   button:hover:not(:disabled) { filter: brightness(1.08); }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
   th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
@@ -136,20 +137,21 @@
         <strong id="cartSubtotal"></strong>
       </div>
       <div class="row">
-        <select id="addProduct"></select>
-        <input id="addQty" type="number" min="1" value="1" />
-        <button id="addItem" class="secondary">Add item</button>
+        <select id="addProduct" disabled></select>
+        <input id="addQty" type="number" min="1" value="1" disabled />
+        <button id="addItem" class="secondary" disabled>Add item</button>
       </div>
+      <p class="hint" id="noCartHint">Create a cart above to enable these.</p>
     </div>
 
     <div class="panel">
       <h2>Checkout</h2>
       <div class="row">
         <label for="couponCode">Coupon (optional)</label>
-        <input id="couponCode" class="flex-1" placeholder="e.g. SAVE10-AB12CD" />
+        <input id="couponCode" class="flex-1" placeholder="e.g. SAVE10-AB12CD" disabled />
       </div>
       <div class="row">
-        <button id="checkout">Checkout</button>
+        <button id="checkout" disabled>Checkout</button>
         <button id="retryCheckout" class="secondary" disabled>Retry same request</button>
       </div>
       <p class="hint" id="checkoutHint">
@@ -208,6 +210,16 @@
   const $ = (id) => document.getElementById(id);
   const money = (cents) => "$" + (cents / 100).toFixed(2);
 
+  // These controls do nothing meaningful without a cart — previously they
+  // stayed enabled and just alert()ed on click, which looks like a bug
+  // rather than an empty state. Disabled by default in the markup; this
+  // flips them once a cart exists.
+  const cartDependentControls = ["addProduct", "addQty", "addItem", "couponCode", "checkout"];
+  function setCartControlsEnabled(enabled) {
+    cartDependentControls.forEach((id) => { $(id).disabled = !enabled; });
+    $("noCartHint").hidden = enabled;
+  }
+
   function logEntry(method, path, status, body) {
     const ok = status >= 200 && status < 300;
     const el = document.createElement("div");
@@ -263,6 +275,7 @@
       tbody.appendChild(tr);
     });
     const fillSelect = (sel) => {
+      const previousValue = sel.value; // preserve the user's selection across refreshes
       sel.innerHTML = "";
       state.products.forEach((p) => {
         const opt = document.createElement("option");
@@ -270,6 +283,9 @@
         opt.textContent = p.name + " (" + p.availableInventory + " left)";
         sel.appendChild(opt);
       });
+      if (previousValue && state.products.some((p) => p.id === previousValue)) {
+        sel.value = previousValue;
+      }
     };
     fillSelect($("addProduct"));
     fillSelect($("raceProduct"));
@@ -310,20 +326,27 @@
 
   $("newCart").addEventListener("click", async () => {
     const { data, ok } = await api("POST", "/carts", { body: { customerId: state.customerId } });
-    if (ok) {
-      state.cartId = data.id;
-      $("retryCheckout").disabled = true;
-      state.lastIdempotencyKey = null;
-      $("orderResult").innerHTML = "";
-      await refreshCartView();
+    if (!ok) {
+      alert(data && data.error ? data.error.message : "Could not create cart.");
+      return;
     }
+    state.cartId = data.id;
+    setCartControlsEnabled(true);
+    $("retryCheckout").disabled = true;
+    state.lastIdempotencyKey = null;
+    $("orderResult").innerHTML = "";
+    await refreshCartView();
   });
 
   $("addItem").addEventListener("click", async () => {
     if (!state.cartId) { alert("Create a cart first."); return; }
     const productId = $("addProduct").value;
     const quantity = Number($("addQty").value) || 1;
-    await api("POST", "/carts/" + state.cartId + "/items", { body: { productId, quantity } });
+    const { ok, data } = await api("POST", "/carts/" + state.cartId + "/items", { body: { productId, quantity } });
+    if (!ok) {
+      alert(data && data.error ? data.error.message : "Could not add item to cart.");
+      return; // nothing changed server-side, so nothing to refresh
+    }
     await refreshCartView();
     await loadProducts();
   });
@@ -341,6 +364,19 @@
       ? '<p class="hint">Order <strong>' + data.id + "</strong> — total " + money(data.totalCents) +
         " (discount " + money(data.discountCents) + ')</p>'
       : '<p class="hint">' + status + " " + (data && data.error ? data.error.code : "error") + "</p>";
+    if (!ok) {
+      // "Checkout" always mints a fresh Idempotency-Key (see newIdempotencyKey), so pressing it
+      // again on a cart that already succeeded doesn't replay anything — it's a genuinely new
+      // attempt that the backend correctly rejects with CART_ALREADY_CHECKED_OUT. Surface that
+      // clearly instead of leaving it as easy-to-miss inline text.
+      const message =
+        data && data.error && data.error.code === "CART_ALREADY_CHECKED_OUT"
+          ? "This cart has already been checked out. Start a new cart to place another order."
+          : data && data.error
+            ? data.error.message
+            : "Checkout failed.";
+      alert(message);
+    }
     await loadProducts();
   }
 
