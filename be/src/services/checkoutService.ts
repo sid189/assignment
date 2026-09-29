@@ -30,23 +30,31 @@ interface Reservation {
 /**
  * Checkout is a reserve -> pay -> finalize flow:
  *
- *   1. (sync, atomic) Validate the cart/coupon and DECREMENT inventory
- *      immediately — this is the authoritative oversell check, and it
- *      protects against every OTHER cart racing for the same stock, not
- *      just retries of this one.
+ *   1. (sync, atomic) Validate the cart/coupon and RESERVE both inventory
+ *      and the coupon (available -> reserved) in the same pass — this is
+ *      the authoritative oversell/double-redemption check, and it
+ *      protects against every OTHER cart racing for the same stock or the
+ *      same coupon, not just retries of this one. Validation and mutation
+ *      are two separate passes over the cart's items: nothing is mutated
+ *      until every item (and the coupon) has been checked, so a failure
+ *      on item N never leaves items 1..N-1 partially decremented.
  *   2. (async) Call the payment gateway, holding the per-cart AsyncLock so
  *      a retry of THIS cart queues behind us instead of double-charging.
- *   3a. Payment fails -> roll back the inventory reservation (sync,
- *       atomic), record the failure against the idempotency key, throw.
+ *   3a. Payment fails -> roll back the reservation (sync, atomic: restores
+ *       inventory and the coupon to "available"), record the failure
+ *       against the idempotency key, throw.
  *   3b. Payment succeeds -> finalize (sync, atomic): create the order,
- *       redeem the coupon, advance the reward counter, close the cart.
+ *       flip the coupon reserved -> redeemed, advance the reward counter,
+ *       close the cart.
  *
- * The one residual race this accepts: if a coupon is redeemed by a
- * DIFFERENT cart of the same customer during our payment await, finalize
- * throws and we roll back — meaning the (fake) payment "succeeded" for a
- * checkout that ultimately failed. With a real payment provider this would
- * need a refund call; deferred here since no real money moves. See
- * DECISIONS.md.
+ * Reserving the coupon atomically alongside inventory (rather than only
+ * validating it at reserve-time and redeeming it at finalize-time) closes
+ * what was previously a documented race: two different carts for the same
+ * customer could both pass an optimistic coupon check and both pay, with
+ * only one winning at finalize — meaning the loser's (fake) payment had
+ * "succeeded" for a checkout that ultimately failed. With reservation, the
+ * loser is rejected at the synchronous reserve() step, before ever calling
+ * payment. See DECISIONS.md, Decision 5.
  */
 export class CheckoutService {
   constructor(
@@ -137,6 +145,14 @@ export class CheckoutService {
     });
   }
 
+  /**
+   * Two passes on purpose: the first only reads and validates (cart,
+   * every item, the coupon); nothing is mutated until every check has
+   * passed. If any check throws, the store is left exactly as it was —
+   * no product has had inventory decremented for an item that came
+   * before the one that failed. Only the second pass mutates, and by
+   * then every mutation it performs is known to be valid.
+   */
   private reserve(tables: Tables, cartId: string, couponCode: string | null): Reservation {
     const cart = tables.carts.get(cartId);
     if (!cart) {
@@ -149,9 +165,8 @@ export class CheckoutService {
       throw AppError.badRequest("CART_EMPTY", "Cart has no items");
     }
 
+    // Pass 1: validate everything, mutate nothing.
     const items: OrderItem[] = [];
-    const inventoryDeltas: InventoryDelta[] = [];
-
     for (const item of cart.items) {
       const product = tables.products.get(item.productId);
       if (!product) {
@@ -164,11 +179,6 @@ export class CheckoutService {
           { productId: product.id, requested: item.quantity, available: product.availableInventory },
         );
       }
-      tables.products.set(product.id, {
-        ...product,
-        availableInventory: product.availableInventory - item.quantity,
-      });
-      inventoryDeltas.push({ productId: product.id, quantity: item.quantity });
       items.push({
         productId: product.id,
         productName: product.name,
@@ -194,6 +204,25 @@ export class CheckoutService {
 
     const totalCents = Math.max(0, subtotalCents - discountCents);
 
+    // Pass 2: every check above passed — now it's safe to mutate. This is
+    // also what makes the reservation exclusive: a concurrent reserve()
+    // for a different cart racing on the same product or the same coupon
+    // will see the decremented inventory / "reserved" status here (exec()
+    // guarantees no other reserve() call can interleave with this one).
+    const inventoryDeltas: InventoryDelta[] = [];
+    for (const item of cart.items) {
+      const product = tables.products.get(item.productId)!;
+      tables.products.set(product.id, {
+        ...product,
+        availableInventory: product.availableInventory - item.quantity,
+      });
+      inventoryDeltas.push({ productId: product.id, quantity: item.quantity });
+    }
+    if (couponCode) {
+      const coupon = tables.coupons.get(couponCode)!;
+      tables.coupons.set(couponCode, { ...coupon, status: "reserved" });
+    }
+
     return { customerId: cart.customerId, items, subtotalCents, couponCode, discountCents, totalCents, inventoryDeltas };
   }
 
@@ -207,15 +236,29 @@ export class CheckoutService {
         });
       }
     }
+    if (reservation.couponCode) {
+      const coupon = tables.coupons.get(reservation.couponCode);
+      if (coupon && coupon.status === "reserved") {
+        tables.coupons.set(reservation.couponCode, { ...coupon, status: "available" });
+      }
+    }
   }
 
   private finalize(tables: Tables, cartId: string, reservation: Reservation): string {
     const cart = tables.carts.get(cartId)!;
 
+    // reserve() already claimed the coupon exclusively (available ->
+    // reserved) before payment was ever called, so no other checkout could
+    // have touched it since. This is a defensive assertion, not a business
+    // race check — it should be unreachable in normal operation.
     if (reservation.couponCode) {
       const coupon = tables.coupons.get(reservation.couponCode);
-      if (!coupon || coupon.status !== "available") {
-        throw AppError.conflict("COUPON_ALREADY_REDEEMED", "Coupon was redeemed by a concurrent checkout");
+      if (!coupon || coupon.status !== "reserved") {
+        throw new AppError(
+          "INTERNAL_ERROR",
+          500,
+          `Coupon ${reservation.couponCode} was not in the expected reserved state at finalize`,
+        );
       }
     }
 

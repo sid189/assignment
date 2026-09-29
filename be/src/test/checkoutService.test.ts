@@ -225,3 +225,66 @@ describe("CheckoutService — coupon rules", () => {
     );
   });
 });
+
+describe("CheckoutService — reservation atomicity", () => {
+  it("never partially decrements inventory when a later item in the same cart fails validation", async () => {
+    const { carts, checkout, products } = buildTestHarness();
+
+    // Cart holds 1 p-mug (item 1) and all 3 p-poster (item 2) — both pass
+    // CartService's add-time check (3 <= 3 available at add-time).
+    const cart = carts.createCart("cust1");
+    carts.addItem(cart.id, "p-mug", 1);
+    carts.addItem(cart.id, "p-poster", 3);
+
+    // A different cart buys 1 of the 3 p-posters in the meantime, so by the
+    // time our cart checks out, item 2 (p-poster) is no longer satisfiable
+    // — but item 1 (p-mug) still is. This is what actually exercises the
+    // "later item fails" path, since add-time checks alone can't produce it.
+    const otherCart = carts.createCart("cust2");
+    carts.addItem(otherCart.id, "p-poster", 1);
+    await checkout.checkout({ cartId: otherCart.id, idempotencyKey: "drain-stock" });
+    expect(products.get("p-poster").availableInventory).toBe(2);
+
+    await expectAsyncAppErrorCode(
+      () => checkout.checkout({ cartId: cart.id, idempotencyKey: "partial-fail" }),
+      "INSUFFICIENT_INVENTORY",
+    );
+
+    // The cart failed as a whole: p-mug (item 1, validated fine) must be
+    // untouched, not decremented-then-orphaned because item 2 in the same
+    // reserve() pass failed after it.
+    expect(products.get("p-mug").availableInventory).toBe(100);
+    expect(products.get("p-poster").availableInventory).toBe(2);
+  });
+
+  it("rejects a losing concurrent checkout for a shared coupon before it ever calls payment", async () => {
+    const gateway = new CountingPaymentGateway({ success: true }, 20);
+    const { carts, checkout, coupons } = buildTestHarness({
+      paymentGateway: gateway,
+      reward: { milestoneEvery: 1, discountPercent: 10 },
+    });
+
+    const seedCart = carts.createCart("cust1");
+    carts.addItem(seedCart.id, "p-notebook", 1);
+    await checkout.checkout({ cartId: seedCart.id, idempotencyKey: "seed" });
+    const coupon = coupons.generateForCustomer("cust1");
+    gateway.calls = 0; // ignore the seed order's payment call
+
+    const cartA = carts.createCart("cust1");
+    carts.addItem(cartA.id, "p-mug", 1);
+    const cartB = carts.createCart("cust1");
+    carts.addItem(cartB.id, "p-pen", 1);
+
+    const results = await Promise.allSettled([
+      checkout.checkout({ cartId: cartA.id, couponCode: coupon.code, idempotencyKey: "race-a" }),
+      checkout.checkout({ cartId: cartB.id, couponCode: coupon.code, idempotencyKey: "race-b" }),
+    ]);
+
+    const succeeded = results.filter((r) => r.status === "fulfilled");
+    expect(succeeded).toHaveLength(1);
+    // The old (pre-fix) behavior let both checkouts pay and only rejected
+    // the loser at finalize, after payment — this asserts the loser is now
+    // rejected at reserve(), before payment is ever attempted.
+    expect(gateway.calls).toBe(1);
+  });
+});

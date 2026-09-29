@@ -92,7 +92,7 @@ and how its total was calculated" even if the product catalog changes later.
 | `customerId` | string | coupon is scoped to one customer |
 | `discountPercent` | integer | from config `x` |
 | `milestoneOrderNumber` | integer | which of this customer's order-count multiples earned it (e.g. `5`, `10`, ...) |
-| `status` | enum | `available` \| `redeemed` |
+| `status` | enum | `available` \| `reserved` \| `redeemed` — `reserved` is internal/transitional (an in-flight checkout has claimed it); never returned by any current API response |
 | `redeemedByOrderId` | string \| null | |
 | `createdAt` | timestamp | |
 
@@ -109,9 +109,12 @@ further item mutation or checkout is allowed on it.
 and produces a `placed` order, or fails validation before any order is persisted — there is no
 "pending" order state in this design, see `DECISIONS.md` for the payment-abstraction rationale).
 
-**Coupon**: `available --[redeemed by a successful checkout]--> redeemed`. A coupon is only moved
-to `redeemed` in the same transaction/commit as the order and inventory changes — a checkout that
-fails validation or fails to commit must leave the coupon `available`.
+**Coupon**: `available --[reserve()]--> reserved --[finalize()]--> redeemed`, with
+`reserved --[rollback, on payment failure or a finalize failure]--> available`. A coupon is
+claimed (`available -> reserved`) atomically alongside inventory, in the same synchronous step
+that decrements inventory — before payment is ever called — and is only moved to `redeemed` once
+the order actually commits. Any checkout that doesn't reach a successful commit must leave the
+coupon back at `available`, never stuck at `reserved`.
 
 ## Concurrency and idempotency strategy (checkout)
 
@@ -165,26 +168,24 @@ delegating it to an external engine. Two primitives:
 
 Together, checkout is a **reserve → pay → finalize** flow, all under the cart's async lock:
 
-1. **Reserve** (sync `exec()`): validate the cart/coupon and *immediately decrement inventory*.
-   This is the authoritative oversell check — it protects against every other cart racing for the
-   same stock, not just retries of this one cart.
+1. **Reserve** (sync `exec()`, two passes — validate everything, then mutate): validate the
+   cart/coupon and *immediately decrement inventory and claim the coupon* (`available -> reserved`)
+   in the same pass. This is the authoritative oversell/double-redemption check — it protects
+   against every other cart racing for the same stock *or the same coupon*, not just retries of
+   this one cart. Splitting validation from mutation into two passes also means a failure partway
+   through a multi-item cart (e.g. item 2 of 3 is out of stock) never leaves item 1 decremented
+   with no rollback — nothing is mutated until every check has passed.
 2. **Pay** (async, inside the lock): call the payment gateway.
-3. **Finalize** (sync `exec()`) on success: create the order, redeem the coupon, advance the
-   reward counter, close the cart. On payment failure, or if finalize itself fails (see below),
-   roll back the inventory reservation in another `exec()` block instead.
+3. **Finalize** (sync `exec()`) on success: create the order, flip the coupon `reserved ->
+   redeemed`, advance the reward counter, close the cart. On payment failure, or if finalize
+   itself fails, roll back the reservation (inventory restored, coupon back to `available`) in
+   another `exec()` block instead.
 
-Reserving inventory *before* payment (rather than re-checking after) means a declined or slow
-payment never risks a torn state — the rollback path is exercised by an explicit code path, not
-assumed. Coupon generation and cart item mutations have no async step, so they go straight through
+Reserving inventory *and the coupon* before payment (rather than re-checking after) means a
+declined or slow payment never risks a torn state — the rollback path is exercised by an explicit
+code path, not assumed, and a losing checkout is rejected before it ever calls payment rather than
+after. Coupon generation and cart item mutations have no async step, so they go straight through
 `exec()` with no lock needed.
-
-**Accepted residual race:** a coupon is only atomically flipped to `redeemed` in the *finalize*
-step, not reserved up front like inventory is. If two different carts for the same customer both
-pass payment concurrently using the same coupon, only the first to reach finalize wins; the second
-throws `COUPON_ALREADY_REDEEMED` there and rolls back its own inventory reservation — but its
-(fake) payment already "succeeded." With a real payment provider this would need a refund call;
-deferred here since no real money moves. Reserving the coupon up front, symmetrically with
-inventory, is the two-hours-more improvement — see `DECISIONS.md`.
 
 This design maps cleanly onto a production evolution: `exec()` blocks translate almost directly
 into Redis Lua scripts or DB transactions with row locks; `AsyncLock` translates to a real Redis

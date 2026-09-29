@@ -39,8 +39,13 @@ export class ReportService {
       let redeemed = 0;
       for (const coupon of t.coupons.values()) {
         generated += 1;
-        if (coupon.status === "available") available += 1;
-        else redeemed += 1;
+        // "reserved" (claimed by an in-flight checkout, not yet paid) is
+        // bucketed with "available" rather than "redeemed": it isn't a
+        // completed redemption, and it will almost certainly return to
+        // "available" (payment failure/rollback) or become "redeemed"
+        // (payment success) within the same request.
+        if (coupon.status === "redeemed") redeemed += 1;
+        else available += 1;
       }
 
       return {

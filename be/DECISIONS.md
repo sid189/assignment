@@ -190,15 +190,33 @@ concert-ticket hold) — decide who gets the resource *before* asking them to pa
 makes the "must not oversell" invariant airtight rather than probabilistic, and turns the failure
 path into an explicit, tested code path (`rollbackReservation`) instead of an assumption.
 
-**Consequences:** The same symmetric treatment was *not* given to coupon redemption — a coupon is
-only atomically flipped to `redeemed` in the post-payment finalize step, not reserved up front.
-That leaves one narrow, accepted race: two different carts of the *same* customer, both holding a
-reference to the same coupon, can both pass the fake payment step before only one of them wins the
-final redemption; the loser rolls back its inventory but its "payment" already went through. With
-a real payment provider this would need a refund call. It's deferred rather than fixed because
-(a) no real money moves with the fake gateway, and (b) it only affects one customer racing against
-themselves. Reserving the coupon symmetrically with inventory is the first thing I'd do with more
-time — see "What I'd examine next."
+**Consequences (original):** Coupon redemption was *not* given the same symmetric treatment at
+first — a coupon was only atomically flipped to `redeemed` in the post-payment finalize step, not
+reserved up front like inventory. That left one narrow race: two different carts of the *same*
+customer, both holding a reference to the same coupon, could both pass the fake payment step
+before only one of them won the final redemption — the loser rolled back its inventory, but its
+"payment" had already gone through. This was initially deferred rather than fixed, on the
+reasoning that no real money moves with the fake gateway.
+
+**Update — closed:** on a follow-up pass specifically auditing for concurrency issues, this was
+fixed rather than left deferred: `CouponStatus` gained a third state, `reserved`, and
+`reserve()` now claims the coupon (`available -> reserved`) in the same atomic step that decrements
+inventory, *before* payment is ever called. A losing concurrent checkout is now rejected at
+`reserve()` — before it calls payment at all — instead of being accepted, paid, and rolled back at
+`finalize()`. `rollbackReservation()` restores the coupon to `available` symmetrically with how it
+restores inventory. Verified with a regression test (`checkoutService.test.ts`, "rejects a losing
+concurrent checkout for a shared coupon before it ever calls payment") asserting the payment
+gateway is called exactly once across two racing checkouts, where it was previously called twice.
+
+The same pass also found and fixed a second, related bug: `reserve()`'s original single-pass loop
+validated and mutated each cart item in the same iteration, so a cart with item 1 valid and item 2
+invalid (e.g. insufficient stock) would decrement item 1's inventory and *then* throw on item 2 —
+leaking a decrement with no rollback, since the call site didn't wrap `reserve()` in a try/catch
+(it didn't need to, on the assumption that "pure validation failures mutate nothing," which this
+violated for any cart with more than one item). Fixed by splitting `reserve()` into two passes:
+validate every item and the coupon first, mutate nothing; only decrement/reserve once every check
+has passed. Verified with a regression test asserting a first, valid item's inventory is untouched
+when a later item in the same cart fails.
 
 ---
 
@@ -276,16 +294,16 @@ the stable, tested contract. Full endpoint-by-endpoint error/status mapping is i
 
 ## What was implemented vs. deferred
 
-**Implemented:** full cart lifecycle, live pricing, checkout with idempotency and inventory
-reservation/rollback, per-customer coupon milestones and redemption, admin coupon generation and a
+**Implemented:** full cart lifecycle, live pricing, checkout with idempotency and symmetric
+inventory + coupon reservation/rollback (see Decision 5's update — the coupon race originally
+called out as accepted was subsequently closed, along with a separate partial-mutation bug found
+in the same pass), per-customer coupon milestones and redemption, admin coupon generation and a
 reconciling read-only report, a fake-but-asynchronous-and-fallible payment abstraction, a
-consistent HTTP error contract, and 40 tests covering the concurrency scenarios the assignment
+consistent HTTP error contract, and 42 tests covering the concurrency scenarios the assignment
 calls out by name (oversell races, idempotent retries, coupon-redemption races, payment-decline
-rollback).
+rollback, and the two regression tests added for the fixes above).
 
 **Deferred, and why:**
-- **Symmetric coupon reservation** (closing the residual race in Decision 5) — narrow window, no
-  real money at risk with the fake gateway; noted as the first thing to fix with more time.
 - **Real persistence / multi-instance support** — out of scope per the assignment ("in-memory
   implementation is acceptable"); migration path is documented below rather than built.
 - **Authentication/authorization** — explicitly out of scope per the assignment.
@@ -347,13 +365,17 @@ implementing `CartService`, with `API_DESIGN.md`/`openapi.yaml` corrected to mat
 
 ## What I'd examine first with another two hours
 
-1. **Close the coupon-reservation race** (Decision 5's consequence) — reserve the coupon
-   atomically alongside inventory in the `reserve()` step instead of only at `finalize()`,
-   removing the last accepted race in checkout.
-2. **A real persistence prototype** — swap `Database` for a thin adapter over SQLite or Postgres
+(The coupon-reservation race and the reserve() partial-mutation bug, originally the top item here,
+were found and closed in a later pass — see Decision 5's "Update — closed." What's left:)
+
+1. **A real persistence prototype** — swap `Database` for a thin adapter over SQLite or Postgres
    to validate that the `exec()`/lock seams actually translate as cleanly as claimed above, rather
    than taking that on faith.
-3. **Request validation** — replace the manual `requireString`/`requireNumber` helpers with a
+2. **Request validation** — replace the manual `requireString`/`requireNumber` helpers with a
    schema library if the request surface were to grow past its current handful of flat fields.
-4. **Observability** — structured request logging and a correlation ID per request, useful for
+3. **Observability** — structured request logging and a correlation ID per request, useful for
    debugging idempotency-key replay behavior in particular.
+4. **A targeted audit for the same class of bug elsewhere** — the `reserve()` partial-mutation bug
+   was a "loop that both validates and mutates" shape; worth specifically checking whether any
+   other multi-step mutation in the codebase shares that shape rather than assuming this was the
+   only instance.

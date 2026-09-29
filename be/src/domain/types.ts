@@ -44,7 +44,14 @@ export interface Order {
   createdAt: string;
 }
 
-export type CouponStatus = "available" | "redeemed";
+/**
+ * "reserved" is an internal, transitional state: a checkout has claimed
+ * this coupon (atomically, at inventory-reservation time) and is awaiting
+ * payment. It is never returned by any API response today — there is no
+ * coupon-lookup endpoint — but it's a real state, not a display nuance,
+ * so it's modeled explicitly rather than folded into "available"/"redeemed".
+ */
+export type CouponStatus = "available" | "reserved" | "redeemed";
 
 export interface Coupon {
   code: string;

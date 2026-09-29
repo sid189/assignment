@@ -440,6 +440,10 @@ components:
         status:
           type: string
           enum: [available, redeemed]
+          description: >
+            The domain model has a third, internal "reserved" state (an in-flight checkout has
+            claimed the coupon) — it is never returned by any endpoint documented here, since
+            there is no coupon-lookup endpoint, so it's omitted from this enum. See API_DESIGN.md.
         redeemedByOrderId:
           type: string
           nullable: true
