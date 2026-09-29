@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Checkout &amp; Rewards — Demo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f7f8;
+    --panel: #ffffff;
+    --border: #e2e2e6;
+    --text: #1b1b1f;
+    --muted: #6b6b72;
+    --accent: #2f6fed;
+    --accent-text: #ffffff;
+    --ok: #1a7f37;
+    --err: #c4281c;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #121214;
+      --panel: #1b1b1f;
+      --border: #2c2c32;
+      --text: #eceef1;
+      --muted: #9a9aa2;
+      --accent: #5b8dfb;
+      --accent-text: #0b0e14;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 20px;
+  }
+  h1 { font-size: 18px; margin: 0 0 2px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 10px; }
+  .subtitle { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+  .subtitle a { color: var(--accent); }
+  .grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  label { font-size: 12px; color: var(--muted); }
+  input, select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  input[type="number"] { width: 70px; }
+  button {
+    background: var(--accent);
+    color: var(--accent-text);
+    border: none;
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  button.secondary { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .pill {
+    display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600;
+  }
+  .pill.ok { background: rgba(26,127,55,0.15); color: var(--ok); }
+  .pill.err { background: rgba(196,40,28,0.15); color: var(--err); }
+  pre {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+    font-family: var(--mono); font-size: 11.5px; overflow-x: auto; margin: 0;
+  }
+  .log { max-height: 260px; overflow-y: auto; }
+  .log-entry { border-bottom: 1px solid var(--border); padding: 6px 0; }
+  .log-entry:last-child { border-bottom: none; }
+  .log-line { display: flex; gap: 8px; align-items: baseline; font-family: var(--mono); font-size: 12px; }
+  .log-line .path { color: var(--text); }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .flex-1 { flex: 1; min-width: 140px; }
+</style>
+</head>
+<body>
+
+<h1>Checkout &amp; Rewards — Demo</h1>
+<p class="subtitle">
+  A thin UI over the real API to exercise backend behavior live — nothing here is mocked.
+  Full API docs: <a href="/docs" target="_blank">/docs</a> (Swagger UI).
+</p>
+
+<div class="row panel">
+  <label for="customerId">Acting as customer</label>
+  <input id="customerId" class="flex-1" value="cust-demo" />
+  <span class="hint">No auth in this system — any customerId is accepted as-is.</span>
+</div>
+
+<div class="grid">
+  <div>
+
+    <div class="panel">
+      <h2>Products</h2>
+      <table id="productsTable"><thead><tr><th>Product</th><th>Price</th><th>Stock</th></tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:10px">
+        <button class="secondary" id="refreshProducts">Refresh</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Cart</h2>
+      <div class="row">
+        <button id="newCart">New cart</button>
+        <span id="cartStatus" class="muted"></span>
+      </div>
+      <table id="cartTable"><thead><tr><th>Product</th><th>Qty</th><th>Line total</th><th></th></tr></thead><tbody></tbody></table>
+      <div class="row" style="margin-top:6px">
+        <strong id="cartSubtotal"></strong>
+      </div>
+      <div class="row">
+        <select id="addProduct"></select>
+        <input id="addQty" type="number" min="1" value="1" />
+        <button id="addItem" class="secondary">Add item</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Checkout</h2>
+      <div class="row">
+        <label for="couponCode">Coupon (optional)</label>
+        <input id="couponCode" class="flex-1" placeholder="e.g. SAVE10-AB12CD" />
+      </div>
+      <div class="row">
+        <button id="checkout">Checkout</button>
+        <button id="retryCheckout" class="secondary" disabled>Retry same request</button>
+      </div>
+      <p class="hint" id="checkoutHint">
+        "Checkout" mints a fresh Idempotency-Key. "Retry same request" resends the exact same
+        cart + key — watch the log below return the same order without a second charge.
+      </p>
+      <div id="orderResult"></div>
+    </div>
+
+  </div>
+  <div>
+
+    <div class="panel">
+      <h2>Admin</h2>
+      <div class="row">
+        <button id="generateCoupon">Generate coupon for customer</button>
+      </div>
+      <div id="couponResult" class="hint"></div>
+      <div class="row" style="margin-top:10px">
+        <button id="refreshReport" class="secondary">Refresh report</button>
+      </div>
+      <pre id="reportOutput">—</pre>
+    </div>
+
+    <div class="panel">
+      <h2>Concurrency demo</h2>
+      <p class="hint">
+        Fires N checkouts <strong>at the same time</strong>, each from a different cart/customer,
+        each buying 1 unit of the chosen product. Watch the store engine reject oversell attempts
+        with 409s instead of overselling — this is the invariant the whole backend is built around.
+      </p>
+      <div class="row">
+        <select id="raceProduct"></select>
+        <label for="raceCount">carts</label>
+        <input id="raceCount" type="number" min="2" max="20" value="5" />
+        <button id="runRace">Run race</button>
+      </div>
+      <table id="raceTable"><thead><tr><th>Cart</th><th>Result</th></tr></thead><tbody></tbody></table>
+      <div id="raceSummary" class="hint"></div>
+    </div>
+
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Request log</h2>
+  <div class="log" id="log"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const state = { cartId: null, customerId: "cust-demo", products: [], lastIdempotencyKey: null };
+
+  const $ = (id) => document.getElementById(id);
+  const money = (cents) => "$" + (cents / 100).toFixed(2);
+
+  function logEntry(method, path, status, body) {
+    const ok = status >= 200 && status < 300;
+    const el = document.createElement("div");
+    el.className = "log-entry";
+    el.innerHTML =
+      '<div class="log-line"><span class="pill ' + (ok ? "ok" : "err") + '">' + status + "</span>" +
+      '<span class="path">' + method + " " + path + "</span></div>" +
+      "<pre>" + escapeHtml(JSON.stringify(body, null, 2)) + "</pre>";
+    const log = $("log");
+    log.prepend(el);
+    while (log.children.length > 40) log.removeChild(log.lastChild);
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  async function api(method, path, { body, headers } = {}) {
+    const res = await fetch(path, {
+      method,
+      headers: Object.assign({ "Content-Type": "application/json" }, headers || {}),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* no body */ }
+    logEntry(method, path, res.status, data);
+    return { status: res.status, ok: res.ok, data };
+  }
+
+  function newIdempotencyKey() {
+    return (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())).slice(0, 8) + "-" + Date.now();
+  }
+
+  async function loadProducts() {
+    const { data } = await api("GET", "/products");
+    state.products = data || [];
+    const tbody = document.querySelector("#productsTable tbody");
+    tbody.innerHTML = "";
+    state.products.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + p.name + " <span class=\"muted\">(" + p.id + ")</span></td>" +
+        "<td>" + money(p.unitPriceCents) + "</td>" +
+        "<td>" + p.availableInventory + "</td>";
+      tbody.appendChild(tr);
+    });
+    const fillSelect = (sel) => {
+      sel.innerHTML = "";
+      state.products.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name + " (" + p.availableInventory + " left)";
+        sel.appendChild(opt);
+      });
+    };
+    fillSelect($("addProduct"));
+    fillSelect($("raceProduct"));
+  }
+
+  async function refreshCartView() {
+    if (!state.cartId) return;
+    const { data } = await api("GET", "/carts/" + state.cartId);
+    const tbody = document.querySelector("#cartTable tbody");
+    tbody.innerHTML = "";
+    (data.items || []).forEach((item) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + item.productId + "</td>" +
+        "<td>" + item.quantity + "</td>" +
+        "<td>" + money(item.lineTotalCents) + "</td>" +
+        '<td><button data-remove="' + item.productId + '" class="secondary">remove</button></td>';
+      tbody.appendChild(tr);
+    });
+    $("cartSubtotal").textContent = "Subtotal: " + money(data.subtotalCents || 0);
+    $("cartStatus").textContent = "cart " + data.id + " — " + data.status;
+    tbody.querySelectorAll("[data-remove]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await api("DELETE", "/carts/" + state.cartId + "/items/" + btn.getAttribute("data-remove"));
+        await refreshCartView();
+        await loadProducts();
+      });
+    });
+  }
+
+  $("refreshProducts").addEventListener("click", loadProducts);
+
+  $("customerId").addEventListener("change", (e) => { state.customerId = e.target.value.trim() || "cust-demo"; });
+
+  $("newCart").addEventListener("click", async () => {
+    const { data, ok } = await api("POST", "/carts", { body: { customerId: state.customerId } });
+    if (ok) {
+      state.cartId = data.id;
+      $("retryCheckout").disabled = true;
+      state.lastIdempotencyKey = null;
+      $("orderResult").innerHTML = "";
+      await refreshCartView();
+    }
+  });
+
+  $("addItem").addEventListener("click", async () => {
+    if (!state.cartId) { alert("Create a cart first."); return; }
+    const productId = $("addProduct").value;
+    const quantity = Number($("addQty").value) || 1;
+    await api("POST", "/carts/" + state.cartId + "/items", { body: { productId, quantity } });
+    await refreshCartView();
+    await loadProducts();
+  });
+
+  async function doCheckout(idempotencyKey) {
+    if (!state.cartId) { alert("Create a cart first."); return; }
+    const couponCode = $("couponCode").value.trim() || null;
+    const { data, ok, status } = await api("POST", "/carts/" + state.cartId + "/checkout", {
+      body: { couponCode },
+      headers: { "Idempotency-Key": idempotencyKey },
+    });
+    state.lastIdempotencyKey = idempotencyKey;
+    $("retryCheckout").disabled = false;
+    $("orderResult").innerHTML = ok
+      ? '<p class="hint">Order <strong>' + data.id + "</strong> — total " + money(data.totalCents) +
+        " (discount " + money(data.discountCents) + ')</p>'
+      : '<p class="hint">' + status + " " + (data && data.error ? data.error.code : "error") + "</p>";
+    await loadProducts();
+  }
+
+  $("checkout").addEventListener("click", () => doCheckout(newIdempotencyKey()));
+  $("retryCheckout").addEventListener("click", () => {
+    if (state.lastIdempotencyKey) doCheckout(state.lastIdempotencyKey);
+  });
+
+  $("generateCoupon").addEventListener("click", async () => {
+    const { data, ok, status } = await api("POST", "/admin/coupons/generate", { body: { customerId: state.customerId } });
+    $("couponResult").textContent = ok
+      ? "Generated: " + data.code + " (" + data.discountPercent + "% off)"
+      : status + " " + (data && data.error ? data.error.message : "");
+  });
+
+  async function refreshReport() {
+    const { data } = await api("GET", "/admin/reports/summary");
+    $("reportOutput").textContent = JSON.stringify(data, null, 2);
+  }
+  $("refreshReport").addEventListener("click", refreshReport);
+
+  $("runRace").addEventListener("click", async () => {
+    const productId = $("raceProduct").value;
+    const count = Math.max(2, Math.min(20, Number($("raceCount").value) || 5));
+    const tbody = document.querySelector("#raceTable tbody");
+    tbody.innerHTML = "";
+    $("raceSummary").textContent = "Setting up " + count + " carts...";
+
+    // Setup (sequential, on purpose) happens BEFORE any checkout fires —
+    // interleaving setup with concurrent checkout calls would let early
+    // checkouts drain stock before later carts even hold an item, which
+    // produces a different, less interesting failure (empty cart) instead
+    // of the inventory race this demo exists to show.
+    const cartIds = [];
+    for (let i = 0; i < count; i++) {
+      const customerId = "race-" + Date.now() + "-" + i;
+      const { data: cart } = await api("POST", "/carts", { body: { customerId } });
+      await api("POST", "/carts/" + cart.id + "/items", { body: { productId, quantity: 1 } });
+      cartIds.push(cart.id);
+    }
+
+    $("raceSummary").textContent = "Firing " + count + " concurrent checkouts...";
+    const results = await Promise.all(
+      cartIds.map((cartId, i) =>
+        api("POST", "/carts/" + cartId + "/checkout", {
+          body: {},
+          headers: { "Idempotency-Key": "race-" + Date.now() + "-" + i },
+        }).then((r) => ({ i, r })),
+      ),
+    );
+
+    results
+      .sort((a, b) => a.i - b.i)
+      .forEach(({ i, r }) => {
+        const tr = document.createElement("tr");
+        const label = r.ok ? "order " + r.data.id.slice(0, 8) : (r.data && r.data.error ? r.data.error.code : "error");
+        tr.innerHTML = "<td>#" + (i + 1) + "</td><td><span class=\"pill " + (r.ok ? "ok" : "err") + "\">" + r.status + "</span> " + label + "</td>";
+        tbody.appendChild(tr);
+      });
+
+    const succeeded = results.filter((x) => x.r.ok).length;
+    await loadProducts();
+    const product = state.products.find((p) => p.id === productId);
+    $("raceSummary").textContent =
+      succeeded + " of " + count + " succeeded — " + product.name + " now at " + product.availableInventory + " units.";
+  });
+
+  loadProducts();
+  refreshReport();
+})();
+</script>
+</body>
+</html>
